@@ -66,6 +66,7 @@ class GeminiClient:
         contents: list,
         config: dict[str, Any] | None = None,
         aspect_ratio: str | None = None,
+        output_resolution: str | None = None,
         **kwargs
     ) -> any:
         """
@@ -75,6 +76,8 @@ class GeminiClient:
             contents: Content list (text, images, etc.)
             config: Generation configuration dict (model-specific parameters)
             aspect_ratio: Optional aspect ratio string (e.g., "16:9")
+            output_resolution: Optional output resolution ("1K", "2K", "4K", "high")
+                               Only supported by Pro model. Values normalized to uppercase.
             **kwargs: Additional parameters
 
         Returns:
@@ -87,9 +90,9 @@ class GeminiClient:
             # Check for config conflict
             config_obj = kwargs.pop("config", None)
             if config_obj is not None:
-                if aspect_ratio or config:
+                if aspect_ratio or config or output_resolution:
                     self.logger.warning(
-                        "Custom 'config' kwarg provided; ignoring aspect_ratio and config parameters"
+                        "Custom 'config' kwarg provided; ignoring aspect_ratio, output_resolution and config parameters"
                     )
                 kwargs["config"] = config_obj
             else:
@@ -101,9 +104,29 @@ class GeminiClient:
                     "response_modalities": ["Image"],  # Force image-only responses
                 }
 
-                # Add aspect ratio if provided
+                # Build ImageConfig with aspect_ratio and/or output_resolution
+                image_config_kwargs = {}
                 if aspect_ratio:
-                    config_kwargs["image_config"] = gx.ImageConfig(aspect_ratio=aspect_ratio)
+                    image_config_kwargs["aspect_ratio"] = aspect_ratio
+
+                # Handle output_resolution for Pro model
+                if output_resolution and isinstance(self.gemini_config, ProImageConfig):
+                    # Normalize resolution to uppercase (API requires "4K" not "4k")
+                    normalized_resolution = self._normalize_resolution(output_resolution)
+                    if normalized_resolution:
+                        image_config_kwargs["output_resolution"] = normalized_resolution
+                        self.logger.info(
+                            f"Setting output_resolution={normalized_resolution} for Pro model"
+                        )
+                elif output_resolution and not isinstance(self.gemini_config, ProImageConfig):
+                    self.logger.warning(
+                        f"output_resolution='{output_resolution}' ignored for Flash model "
+                        "(only Pro model supports resolutions above 1024px)"
+                    )
+
+                # Create ImageConfig if we have any parameters
+                if image_config_kwargs:
+                    config_kwargs["image_config"] = gx.ImageConfig(**image_config_kwargs)
 
                 # Merge filtered config parameters
                 config_kwargs.update(filtered_config)
@@ -164,19 +187,13 @@ class GeminiClient:
             if "media_resolution" in config:
                 filtered["media_resolution"] = config["media_resolution"]
 
-            # Output resolution hints (may not be directly supported by API)
-            if "output_resolution" in config:
-                # This might need to be encoded in the prompt instead
-                self.logger.debug(
-                    f"Output resolution requested: {config['output_resolution']}"
-                )
-
+            # Note: output_resolution is now handled via ImageConfig in generate_content()
             # Note: enable_grounding may be controlled via system instructions
             # rather than as a direct API parameter in some SDK versions
 
         else:
             # Flash model - warn if Pro parameters are used
-            pro_params = ["thinking_level", "media_resolution", "output_resolution"]
+            pro_params = ["thinking_level", "media_resolution"]
             used_pro_params = [p for p in pro_params if p in config]
             if used_pro_params:
                 self.logger.warning(
@@ -184,6 +201,43 @@ class GeminiClient:
                 )
 
         return filtered
+
+    def _normalize_resolution(self, resolution: str) -> str | None:
+        """
+        Normalize resolution string to API-compatible format.
+
+        The Gemini API requires uppercase resolution values ("4K", not "4k").
+        Also maps "high" to appropriate value.
+
+        Args:
+            resolution: Raw resolution string (e.g., "4k", "high", "2K")
+
+        Returns:
+            Normalized resolution string or None if invalid
+        """
+        if not resolution:
+            return None
+
+        resolution_lower = resolution.lower().strip()
+
+        # Map common values to API format
+        resolution_map = {
+            "4k": "4K",
+            "2k": "2K",
+            "1k": "1K",
+            "high": "4K",  # "high" maps to max quality (4K) for Pro model
+        }
+
+        normalized = resolution_map.get(resolution_lower)
+
+        if normalized:
+            return normalized
+        else:
+            self.logger.warning(
+                f"Unknown resolution '{resolution}', defaulting to None. "
+                f"Valid values: 1K, 2K, 4K, high"
+            )
+            return None
 
     def extract_images(self, response) -> list[bytes]:
         """Extract image bytes from Gemini response."""

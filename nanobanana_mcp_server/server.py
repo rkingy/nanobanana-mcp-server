@@ -6,14 +6,16 @@ A production-ready FastMCP server that provides AI-powered image generation and 
 capabilities through Google's Gemini 2.5 Flash Image model.
 """
 
-import sys
-import os
-from .config.settings import ServerConfig, GeminiConfig
-from .core.server import NanoBananaMCP
-from .core.exceptions import ConfigurationError
-from .utils.logging_utils import setup_logging
-from . import services
 import logging
+import os
+import sys
+
+from . import services
+from .config.settings import GeminiConfig, ServerConfig
+from .core.exceptions import ConfigurationError
+from .core.server import NanoBananaMCP
+from .core.validation import configure_allowed_directories
+from .utils.logging_utils import setup_logging
 
 
 def create_app():
@@ -39,6 +41,15 @@ def create_app():
 
         logger.info(f"Server transport: {server_config.transport}")
         logger.info(f"Gemini model: {gemini_config.model_name}")
+
+        # Configure security: set allowed directories for file operations
+        # This MUST be done before any file operations occur
+        configure_allowed_directories(
+            input_dirs=server_config.allowed_input_directories,
+            output_dir=server_config.image_output_dir
+        )
+        logger.info(f"Security: Allowed input dirs: {server_config.allowed_input_directories}")
+        logger.info(f"Security: Output directory: {server_config.image_output_dir}")
 
         # Initialize services first
         services.initialize_services(server_config, gemini_config)
@@ -80,6 +91,15 @@ def create_wrapper_app() -> NanoBananaMCP:
 
         logger.info(f"Server transport: {server_config.transport}")
         logger.info(f"Gemini model: {gemini_config.model_name}")
+
+        # Configure security: set allowed directories for file operations
+        # This MUST be done before any file operations occur
+        configure_allowed_directories(
+            input_dirs=server_config.allowed_input_directories,
+            output_dir=server_config.image_output_dir
+        )
+        logger.info(f"Security: Allowed input dirs: {server_config.allowed_input_directories}")
+        logger.info(f"Security: Output directory: {server_config.image_output_dir}")
 
         # Initialize services first
         services.initialize_services(server_config, gemini_config)

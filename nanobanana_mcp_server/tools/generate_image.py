@@ -1,7 +1,6 @@
 import base64
 import logging
 import mimetypes
-import os
 from typing import Annotated, Literal
 
 from fastmcp import Context, FastMCP
@@ -12,6 +11,7 @@ from pydantic import Field
 from ..config.constants import MAX_INPUT_IMAGES
 from ..config.settings import ModelTier, ThinkingLevel
 from ..core.exceptions import ValidationError
+from ..core.validation import validate_input_image_path
 
 
 def register_generate_image_tool(server: FastMCP):
@@ -167,7 +167,7 @@ def register_generate_image_tool(server: FastMCP):
             model_selector = get_model_selector()
 
             # Select model based on prompt and parameters
-            selected_service, selected_tier = model_selector.select_model(
+            _selected_service, selected_tier = model_selector.select_model(
                 prompt=prompt,
                 requested_tier=tier,
                 n=n,
@@ -191,12 +191,19 @@ def register_generate_image_tool(server: FastMCP):
                 if len(input_image_paths) > MAX_INPUT_IMAGES:
                     raise ValidationError(f"Maximum {MAX_INPUT_IMAGES} input images allowed")
 
-                # Validate that all files exist
+                # Securely validate all input image paths
+                # This validates against path traversal, symlink attacks, and directory sandboxing
+                validated_paths = []
                 for i, path in enumerate(input_image_paths):
-                    if not os.path.exists(path):
-                        raise ValidationError(f"Input image {i + 1} not found: {path}")
-                    if not os.path.isfile(path):
-                        raise ValidationError(f"Input image {i + 1} is not a file: {path}")
+                    try:
+                        validated_path = validate_input_image_path(path)
+                        validated_paths.append(validated_path)
+                        logger.debug(f"Validated input image {i + 1}: {path} -> {validated_path}")
+                    except ValidationError as e:
+                        raise ValidationError(f"Input image {i + 1} validation failed: {e}") from e
+
+                # Replace with validated (resolved) paths
+                input_image_paths = validated_paths
 
             # Mode-specific validation
             if detected_mode == "edit":
@@ -258,16 +265,44 @@ def register_generate_image_tool(server: FastMCP):
 
                     logger.info(f"Loaded {len(input_images)} input images from file paths")
 
-                # Generate images following workflows.md pattern:
-                # M->G->FS->F->D (save full-res, create thumbnail, upload to Files API, track in DB)
-                thumbnail_images, metadata = enhanced_image_service.generate_images(
-                    prompt=prompt,
-                    n=n,
-                    negative_prompt=negative_prompt,
-                    system_instruction=system_instruction,
-                    input_images=input_images,
-                    aspect_ratio=aspect_ratio,
-                )
+                # Route to appropriate service based on selected model tier
+                if selected_tier == ModelTier.PRO:
+                    # Use Pro model for 4K support and advanced features
+                    logger.info(
+                        f"Using Pro model for generation (resolution={resolution}, "
+                        f"thinking_level={thinking_level})"
+                    )
+                    from ..services import get_pro_image_service
+                    pro_service = get_pro_image_service()
+
+                    # Parse thinking level enum
+                    thinking_enum = ThinkingLevel(thinking_level) if thinking_level else ThinkingLevel.HIGH
+
+                    thumbnail_images, metadata = pro_service.generate_images(
+                        prompt=prompt,
+                        n=n,
+                        resolution=resolution,  # Pass resolution for 4K support
+                        thinking_level=thinking_enum,
+                        enable_grounding=enable_grounding,
+                        negative_prompt=negative_prompt,
+                        system_instruction=system_instruction,
+                        input_images=input_images,
+                        aspect_ratio=aspect_ratio,
+                        use_storage=True,
+                    )
+                else:
+                    # Use Flash model via enhanced service (workflows.md pattern)
+                    # M->G->FS->F->D (save full-res, create thumbnail, upload to Files API, track in DB)
+                    logger.info("Using Flash model via enhanced image service")
+                    thumbnail_images, metadata = enhanced_image_service.generate_images(
+                        prompt=prompt,
+                        n=n,
+                        negative_prompt=negative_prompt,
+                        system_instruction=system_instruction,
+                        input_images=input_images,
+                        aspect_ratio=aspect_ratio,
+                        resolution=resolution,  # Pass resolution (will be limited to 1024px for Flash)
+                    )
 
             # Create response with file paths and thumbnails
             if metadata:

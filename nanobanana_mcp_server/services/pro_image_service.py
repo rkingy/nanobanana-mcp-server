@@ -38,6 +38,7 @@ class ProImageService:
         negative_prompt: str | None = None,
         system_instruction: str | None = None,
         input_images: list[tuple[str, str]] | None = None,
+        aspect_ratio: str | None = None,
         use_storage: bool = True,
     ) -> tuple[list[MCPImage], list[dict[str, Any]]]:
         """
@@ -59,6 +60,7 @@ class ProImageService:
             negative_prompt: Optional constraints to avoid
             system_instruction: Optional system-level guidance
             input_images: List of (base64, mime_type) tuples for conditioning
+            aspect_ratio: Optional aspect ratio (e.g., "16:9", "1:1")
             use_storage: Store images and return resource links with thumbnails
 
         Returns:
@@ -141,9 +143,12 @@ class ProImageService:
                     # The API may not expose enable_grounding as a direct parameter
                     # depending on SDK version
 
+                    # Pass resolution and aspect_ratio to generate_content for 4K support
                     response = self.gemini_client.generate_content(
                         contents,
-                        config=gen_config
+                        config=gen_config,
+                        output_resolution=resolution,  # Enable 4K, 2K, 1K generation
+                        aspect_ratio=aspect_ratio,
                     )
                     images = self.gemini_client.extract_images(response)
 
@@ -155,6 +160,7 @@ class ProImageService:
                             "response_index": i + 1,
                             "image_index": j + 1,
                             "resolution": resolution,
+                            "aspect_ratio": aspect_ratio,
                             "thinking_level": thinking_level.value,
                             "media_resolution": media_resolution.value,
                             "grounding_enabled": enable_grounding,
