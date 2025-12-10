@@ -89,33 +89,27 @@ class ProImageService:
 
             progress.update(10, "Preparing generation request...")
 
-            # Build content with Pro-optimized prompt
-            contents = []
+            # DEBUG: Confirm we're using updated code
+            import sys
+            print("PRO_SERVICE_V2: Using simplified contents approach", file=sys.stderr)
 
-            # System instruction (optional)
-            if system_instruction:
-                contents.append(system_instruction)
-            elif enable_grounding:
-                # Add grounding hint for Pro model
-                contents.append(
-                    "Use real-world knowledge and current information "
-                    "to create accurate, detailed images."
-                )
+            # Build content - keep it simple like the working test
+            # Just use the prompt directly, optionally with negative prompt
+            final_prompt = prompt
+            if negative_prompt:
+                final_prompt = f"{prompt}\n\nAvoid: {negative_prompt}"
 
-            # Enhanced prompt for Pro model
-            enhanced_prompt = self._enhance_prompt_for_pro(
-                prompt, resolution, negative_prompt
-            )
-            contents.append(enhanced_prompt)
+            # Simple contents list - just the prompt string
+            contents = [final_prompt]
 
-            # Add input images if provided (Pro benefits from images-first)
+            # Add input images if provided
             if input_images:
                 images_b64, mime_types = zip(*input_images, strict=False)
                 image_parts = self.gemini_client.create_image_parts(
                     list(images_b64), list(mime_types)
                 )
-                # Pro model: place images before text for better context
-                contents = image_parts + contents
+                # Add images after prompt
+                contents = contents + image_parts
 
             progress.update(20, "Sending requests to Gemini 3 Pro API...")
 
@@ -130,23 +124,11 @@ class ProImageService:
                         f"Generating high-quality image {i + 1}/{n}..."
                     )
 
-                    # Build generation config for Pro model
-                    gen_config = {
-                        "thinking_level": thinking_level.value,
-                    }
-
-                    # Add Pro-specific parameters
-                    if self.config.supports_media_resolution:
-                        gen_config["media_resolution"] = media_resolution.value
-
-                    # Note: Grounding is controlled via prompt/system instruction
-                    # The API may not expose enable_grounding as a direct parameter
-                    # depending on SDK version
-
-                    # Pass resolution and aspect_ratio to generate_content for 4K support
+                    # Pro model uses simple config - thinking is automatic
+                    # Pass resolution and aspect_ratio for 4K/2K/1K support
                     response = self.gemini_client.generate_content(
                         contents,
-                        config=gen_config,
+                        config=None,  # No extra config needed - handled in gemini_client
                         output_resolution=resolution,  # Enable 4K, 2K, 1K generation
                         aspect_ratio=aspect_ratio,
                     )
@@ -167,7 +149,7 @@ class ProImageService:
                             "mime_type": f"image/{self.config.default_image_format}",
                             "synthid_watermark": True,
                             "prompt": prompt,
-                            "enhanced_prompt": enhanced_prompt,
+                            "final_prompt": final_prompt,
                             "negative_prompt": negative_prompt,
                         }
 
@@ -222,7 +204,15 @@ class ProImageService:
                             )
 
                 except Exception as e:
-                    self.logger.error(f"Failed to generate Pro image {i + 1}: {e}")
+                    import traceback
+                    import sys
+                    error_msg = f"Failed to generate Pro image {i + 1}: {e}"
+                    tb = traceback.format_exc()
+                    self.logger.error(error_msg)
+                    self.logger.error(f"Full traceback: {tb}")
+                    # Also print to stderr for MCP visibility
+                    print(f"PRO MODEL ERROR: {error_msg}", file=sys.stderr)
+                    print(f"TRACEBACK: {tb}", file=sys.stderr)
                     # Continue with other images rather than failing completely
                     continue
 

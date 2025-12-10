@@ -196,18 +196,26 @@ class FlashImageConfig(BaseModelConfig):
 
 @dataclass
 class ProImageConfig(BaseModelConfig):
-    """Gemini 3 Pro Image configuration (quality-optimized)."""
+    """Gemini 3 Pro Image configuration (quality-optimized).
+
+    Features:
+    - High-resolution output: 1K, 2K, and 4K visuals
+    - Advanced text rendering for infographics, menus, diagrams
+    - Grounding with Google Search for real-time data
+    - Thinking mode for complex prompts
+    - Up to 14 reference images for composition
+    """
 
     model_name: str = "gemini-3-pro-image-preview"
     max_resolution: int = 3840  # 4K
-    default_resolution: str = "high"  # low/medium/high
+    default_resolution: str = "2K"  # "1K", "2K", "4K"
     default_thinking_level: ThinkingLevel = ThinkingLevel.HIGH
     default_media_resolution: MediaResolution = MediaResolution.HIGH
     supports_thinking: bool = True
     supports_grounding: bool = True
     supports_media_resolution: bool = True
     enable_search_grounding: bool = True
-    request_timeout: int = 90  # Pro model needs more time for 4K
+    request_timeout: int = 120  # Pro model needs more time for 4K with thinking
 
 
 @dataclass

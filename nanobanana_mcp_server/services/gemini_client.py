@@ -99,24 +99,29 @@ class GeminiClient:
                 # Filter parameters based on model capabilities
                 filtered_config = self._filter_parameters(config or {})
 
-                # Build generation config
-                config_kwargs = {
-                    "response_modalities": ["Image"],  # Force image-only responses
-                }
+                # Build generation config - Pro model supports TEXT + IMAGE responses
+                if isinstance(self.gemini_config, ProImageConfig):
+                    config_kwargs = {
+                        "response_modalities": ["TEXT", "IMAGE"],  # Pro can return both
+                    }
+                else:
+                    config_kwargs = {
+                        "response_modalities": ["IMAGE"],  # Flash: image-only responses
+                    }
 
-                # Build ImageConfig with aspect_ratio and/or output_resolution
+                # Build ImageConfig with aspect_ratio and/or image_size
                 image_config_kwargs = {}
                 if aspect_ratio:
                     image_config_kwargs["aspect_ratio"] = aspect_ratio
 
-                # Handle output_resolution for Pro model
+                # Handle image_size for Pro model (1K, 2K, 4K)
                 if output_resolution and isinstance(self.gemini_config, ProImageConfig):
                     # Normalize resolution to uppercase (API requires "4K" not "4k")
                     normalized_resolution = self._normalize_resolution(output_resolution)
                     if normalized_resolution:
-                        image_config_kwargs["output_resolution"] = normalized_resolution
+                        image_config_kwargs["image_size"] = normalized_resolution
                         self.logger.info(
-                            f"Setting output_resolution={normalized_resolution} for Pro model"
+                            f"Setting image_size={normalized_resolution} for Pro model"
                         )
                 elif output_resolution and not isinstance(self.gemini_config, ProImageConfig):
                     self.logger.warning(
@@ -142,16 +147,25 @@ class GeminiClient:
             # Merge additional kwargs
             api_kwargs.update(kwargs)
 
-            self.logger.debug(
-                f"Calling Gemini API: model={self.gemini_config.model_name}, "
-                f"config={api_kwargs.get('config')}"
-            )
+            # Log detailed config for debugging
+            config_obj = api_kwargs.get('config')
+            if config_obj:
+                self.logger.info(
+                    f"Calling Gemini API: model={self.gemini_config.model_name}, "
+                    f"response_modalities={getattr(config_obj, 'response_modalities', None)}, "
+                    f"image_config={getattr(config_obj, 'image_config', None)}"
+                )
+            else:
+                self.logger.info(f"Calling Gemini API: model={self.gemini_config.model_name}, config=None")
 
             response = self.client.models.generate_content(**api_kwargs)
+            self.logger.info(f"Gemini API response received for {self.gemini_config.model_name}")
             return response
 
         except Exception as e:
-            self.logger.error(f"Gemini API error: {e}")
+            import traceback
+            self.logger.error(f"Gemini API error for {self.gemini_config.model_name}: {e}")
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
 
     def _filter_parameters(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -240,8 +254,39 @@ class GeminiClient:
             return None
 
     def extract_images(self, response) -> list[bytes]:
-        """Extract image bytes from Gemini response."""
+        """Extract image bytes from Gemini response.
+
+        Handles both Flash model (inline_data) and Pro model (as_image()) formats.
+        """
         images = []
+
+        # Try using response.parts directly first (newer API style)
+        parts = getattr(response, "parts", None)
+        if parts:
+            for part in parts:
+                # Try as_image() method (Pro model style from docs)
+                if hasattr(part, "as_image"):
+                    try:
+                        img = part.as_image()
+                        if img:
+                            # as_image() returns a PIL-like object, get bytes
+                            import io
+                            buf = io.BytesIO()
+                            img.save(buf, format="PNG")
+                            images.append(buf.getvalue())
+                            continue
+                    except Exception:
+                        pass  # Fall through to other methods
+
+                # Try inline_data (Flash model style)
+                inline_data = getattr(part, "inline_data", None)
+                if inline_data and hasattr(inline_data, "data") and inline_data.data:
+                    images.append(inline_data.data)
+
+            if images:
+                return images
+
+        # Fall back to candidates structure
         candidates = getattr(response, "candidates", None)
         if not candidates or len(candidates) == 0:
             return images
@@ -252,6 +297,20 @@ class GeminiClient:
 
         content_parts = getattr(first_candidate.content, "parts", [])
         for part in content_parts:
+            # Try as_image() method first
+            if hasattr(part, "as_image"):
+                try:
+                    img = part.as_image()
+                    if img:
+                        import io
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG")
+                        images.append(buf.getvalue())
+                        continue
+                except Exception:
+                    pass
+
+            # Try inline_data
             inline_data = getattr(part, "inline_data", None)
             if inline_data and hasattr(inline_data, "data") and inline_data.data:
                 images.append(inline_data.data)
